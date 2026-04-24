@@ -1,9 +1,16 @@
+# importing required modules
 import requests
 import csv
 import asyncio
 from telegram import Bot
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 from Botinfo import bot_api,username
+
+
+#Function that reads the daraz link and stores json data as "data".The function returns all the item objects in that page in a JSON format
 def ReadJSONAPI() -> list:
+ try:
     url = "https://www.daraz.com.np/catalog/?ajax=true&q=pendrive"
 
     headers = {
@@ -20,66 +27,83 @@ def ReadJSONAPI() -> list:
         return []
 
     return [data["mods"]["listItems"]]
-    
-
+ except:
+     print("Reading Error")
+     return []
+ 
+#opens prices.csv and re writes the new data everytime its called 
 def Writing_in_CSV(products):
-        with open("prices.csv", "w", newline="", encoding="utf-8") as csvfile:
+
+        with open("prices.csv", "a", newline="", encoding="utf-8") as csvfile:
          fieldnames = ["name", "price"]
          writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-         writer.writeheader()
-
+        
          for product in products:
             writer.writerow({
-                "name": product["name"],
                 "price": product["price"]
             })
-def loading_past_prices():
+
+#returns the prices of all the items as a list like[55,660,100,.....]
+def loading_past_prices()->list:
+ try:
     with open("prices.csv","r") as csvfile:
         File=csv.reader(csvfile)
         past_data=[]
         for line in File:
             past_data.append(line[1])
         return past_data
-    
-def compair_prices():
+ except:
+     print("loading error")
+     return []
+
+#uses loading_past_prices and ReadJsonAPI to get last checked price and current price and returns string respective to what happend
+def compair_prices()->list:
+ 
     Pprices=loading_past_prices()
     Data=ReadJSONAPI()
     Nprices=[]
-    for data in Data:
+    Name=[]
+    for data in Data[0]:
         Nprices.append(data["price"])
-    i=0
+        Name.append(data["name"])
+    i=0 
     for Pprice in Pprices:
-        i+=1
-        if Pprice-Nprices[i]==0:
-            return("same price")
         
-        elif Pprice-Nprices[i]>0:
-            Writing_in_CSV(Data)
-            return"PRICE DROP!!"
+        if Pprice=="price":
+           continue
+           
+        
+        if int(Pprice)-int(Nprices[i])>0:
+            Writing_in_CSV(Data[0])
+            return["+",abs(int(Pprice)-int(Nprices[i])),Name[i]]
             
-        elif Pprice-Nprices[i]<0:
-             Writing_in_CSV(Data)
-             return"price increase"
-        
-        else:
-            return
-        
+        i+=1
+    return [0,"null","null"]    
+ 
 
-
-
-
+#A function where it takes message and send that message to a user in the telegram bot
 async def send_telegram_message(message):
+ 
     bot = Bot(token=bot_api)
-    await bot.send_message(chat_id=username, text=message)
-
+    await bot.send_message(chat_id=6282583953, text=message)
+ 
+ 
+#Calls the send_telegram_message function if compair_prices returns "+"
 def send_msg():
     result=compair_prices()
-    if result=="PRICE DROP!!":
+    if result[0]=="+":
 
         asyncio.run(send_telegram_message(
-            "🚨 Price Drop!!!!!!!!!"
+            f"🚨 Price Drop!! of {result[2]} by {result[1]}"
         ))
         print("Alert sent!")
     else:
+        asyncio.run(send_telegram_message(
+            "No drop yet"
+        ))
         print("No drop yet.")
+
+
+# executing the program
+send_msg()
 
