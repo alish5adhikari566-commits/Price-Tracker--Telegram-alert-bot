@@ -1,109 +1,179 @@
-# importing required modules
 import requests
 import csv
 import asyncio
+import os
+from pathlib import Path
+from datetime import datetime
 from telegram import Bot
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-from Botinfo import bot_api,username
+
+# --- CONFIG ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_TOKEN_HERE")
+CHAT_ID = 6282583953
+CSV_FILE = "prices.csv"
+DARAZ_URL = "https://www.daraz.com.np/catalog/?ajax=true&q=pendrive"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json"
+}
 
 
-#Function that reads the daraz link and stores json data as "data".The function returns all the item objects in that page in a JSON format
-def ReadJSONAPI() -> list:
- try:
-    url = "https://www.daraz.com.np/catalog/?ajax=true&q=pendrive"
+# --- DATA FETCHING ---
 
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json"
-    }
-
-    r = requests.get(url, headers=headers)
-
+def fetch_current_products() -> list[dict]:
+    """Fetch current products from Daraz API. Returns list of {name, price} dicts."""
     try:
-        data = r.json()
-    except Exception:
-        print("Response is not JSON. Blocking or HTML received.")
+        response = requests.get(DARAZ_URL, headers=HEADERS, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return data["mods"]["listItems"]
+    except requests.RequestException as e:
+        print(f"[Network Error] {e}")
+        return []
+    except (KeyError, ValueError) as e:
+        print(f"[Parse Error] {e}")
         return []
 
-    return [data["mods"]["listItems"]]
- except:
-     print("Reading Error")
-     return []
- 
-#opens prices.csv and re writes the new data everytime its called 
-def Writing_in_CSV(products):
 
-        with open("prices.csv", "a", newline="", encoding="utf-8") as csvfile:
-         fieldnames = ["name", "price"]
-         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        
-         for product in products:
-            writer.writerow({
-                "price": product["price"]
+# --- CSV HELPERS ---
+
+
+def load_csv() -> dict[str, dict]:
+    """
+    Load CSV into memory.
+    Returns { product_name: { date: price, ... } }
+    """
+    if not Path(CSV_FILE).exists():
+        return {}
+
+    data = {}
+    try:
+        with open(CSV_FILE, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                name = row["name"]
+                prices = {col: row[col] for col in row if col != "name" and row[col] != ""}
+                data[name] = prices
+    except Exception as e:
+        print(f"[CSV Read Error] {e}")
+    return data
+
+
+def save_csv(data: dict[str, dict]):
+    """
+    Save full data back to CSV.
+    data = { product_name: { date: price } }
+    """
+    all_dates = sorted(
+        set(date for prices in data.values() for date in prices.keys())
+    )
+    fieldnames = ["name"] + all_dates
+
+    try:
+        with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for name, prices in data.items():
+                row = {"name": name}
+                row.update(prices)
+                writer.writerow(row)
+    except Exception as e:
+        print(f"[CSV Write Error] {e}")
+
+
+def append_todays_prices(products: list[dict]) -> tuple[str, dict]:
+    """Add today's prices as a new date column and return updated data."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    data = load_csv()
+
+    for product in products:
+        name = product["name"]
+        try:
+            price = int(product["price"])
+        except (ValueError, KeyError):
+            continue
+
+        if name not in data:
+            data[name] = {}
+        data[name][today] = str(price)
+
+    save_csv(data)
+    return today, data
+
+
+# --- PRICE COMPARISON ---
+
+def find_price_drops() -> list[dict]:
+    """
+    Compare last 2 date columns per product.
+    Returns list of drops: [{name, old_price, new_price, drop, old_date, new_date}]
+    """
+    current_products = fetch_current_products()
+    if not current_products:
+        return []
+
+    _today, data = append_todays_prices(current_products)
+
+    drops = []
+    for name, prices in data.items():
+        dates = sorted(prices.keys())
+
+        # Need at least 2 dates to compare
+        if len(dates) < 2:
+            continue
+
+        old_date, new_date = dates[-2], dates[-1]
+
+        try:
+            old_price = int(prices[old_date])
+            new_price = int(prices[new_date])
+        except ValueError:
+            continue
+
+        if new_price < old_price:
+            drops.append({
+                "name": name,
+                "old_price": old_price,
+                "new_price": new_price,
+                "drop": old_price - new_price,
+                "old_date": old_date,
+                "new_date": new_date,
             })
 
-#returns the prices of all the items as a list like[55,660,100,.....]
-def loading_past_prices()->list:
- try:
-    with open("prices.csv","r") as csvfile:
-        File=csv.reader(csvfile)
-        past_data=[]
-        for line in File:
-            past_data.append(line[1])
-        return past_data
- except:
-     print("loading error")
-     return []
-
-#uses loading_past_prices and ReadJsonAPI to get last checked price and current price and returns string respective to what happend
-def compair_prices()->list:
- 
-    Pprices=loading_past_prices()
-    Data=ReadJSONAPI()
-    Nprices=[]
-    Name=[]
-    for data in Data[0]:
-        Nprices.append(data["price"])
-        Name.append(data["name"])
-    i=0 
-    for Pprice in Pprices:
-        
-        if Pprice=="price":
-           continue
-           
-        
-        if int(Pprice)-int(Nprices[i])>0:
-            Writing_in_CSV(Data[0])
-            return["+",abs(int(Pprice)-int(Nprices[i])),Name[i]]
-            
-        i+=1
-    return [0,"null","null"]    
- 
-
-#A function where it takes message and send that message to a user in the telegram bot
-async def send_telegram_message(message):
- 
-    bot = Bot(token=bot_api)
-    await bot.send_message(chat_id=6282583953, text=message)
- 
- 
-#Calls the send_telegram_message function if compair_prices returns "+"
-def send_msg():
-    result=compair_prices()
-    if result[0]=="+":
-
-        asyncio.run(send_telegram_message(
-            f"🚨 Price Drop!! of {result[2]} by {result[1]}"
-        ))
-        print("Alert sent!")
-    else:
-        asyncio.run(send_telegram_message(
-            "No drop yet"
-        ))
-        print("No drop yet.")
+    return drops
 
 
-# executing the program
-send_msg()
+# --- TELEGRAM ---
 
+async def send_message(text: str):
+    bot = Bot(token=BOT_TOKEN)
+    await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="Markdown")
+
+
+def build_alert_message(drops: list[dict]) -> str:
+    if not drops:
+        return "✅ Checked prices — no drops found."
+
+    lines = ["🚨 *Price Drops Detected!*\n"]
+    for d in drops:
+        lines.append(
+            f"🔻 *{d['name'][:60]}*\n"
+            f"   `{d['old_date']}` Rs {d['old_price']} → "
+            f"`{d['new_date']}` Rs {d['new_price']}  (saved Rs {d['drop']})\n"
+        )
+    return "\n".join(lines)
+
+
+# --- MAIN ---
+
+def run():
+    print("Checking prices...")
+    drops = find_price_drops()
+    message = build_alert_message(drops)
+    print(message)
+    asyncio.run(send_message(message))
+    print("Done.")
+
+
+if __name__ == "__main__":
+    run()
