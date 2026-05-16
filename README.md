@@ -1,7 +1,7 @@
  Daraz Price Drop Alert Bot
    A Python script that monitors product prices on Daraz Nepal and sends a Telegram notification when a price drop is         detected.
 
-
+ 
 Features
  1)Fetches live product listings from Daraz via its internal JSON API
  2)Stores prices locally in a CSV file for historical comparison
